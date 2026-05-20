@@ -75,7 +75,6 @@ except Exception as e:
 
 # --- 🚀 ARQUITECTURA DE DATOS ULTRA-VELOZ EN MEMORIA LOCAL ---
 def cargar_datos_desde_servidor():
-    """Descarga de red masiva (solo ocurre una vez al abrir la app)"""
     conn = get_db_connection()
     st.session_state["lotes_df"] = pd.read_sql_query("SELECT * FROM lotes_db", conn)
     st.session_state["paletas_df"] = pd.read_sql_query("SELECT * FROM paletas_db", conn)
@@ -83,18 +82,15 @@ def cargar_datos_desde_servidor():
     st.session_state["historico_pbo_df"] = pd.read_sql_query("SELECT * FROM historico_pbo_db", conn)
     conn.close()
 
-# Inicialización única del estado de la sesión
 if "lotes_df" not in st.session_state:
     with st.spinner("Estableciendo enlace de alta velocidad con el servidor..."):
         cargar_datos_desde_servidor()
 
-# Asignación de variables de trabajo directo apuntando a la RAM
 lotes_activos_df = st.session_state["lotes_df"]
 paletas_activas_df = st.session_state["paletas_df"]
 reprocesos_activos_df = st.session_state["reprocesos_df"]
 historico_pbo_df = st.session_state["historico_pbo_df"]
 
-# Listas globales de configuración fija
 ESTATUS_OPCIONES = ["Sin reprocesar", "Reprocesado", "Briqueteado", "Aceptado con desviación"]
 ESTATUS_DICTAMEN_CALIDAD = ["En Control de Calidad", "Chequeado", "Liberado"]
 ESTATUS_DICTAMEN_LOGISTICA = ["En espera", "Confirmado", "Inconsistencia"]
@@ -136,7 +132,6 @@ def ejecutar_higiene_y_cierre_automatico(usuario_actual):
                 cursor.execute("DELETE FROM reproceso_db WHERE id_pbo = %s;", (pbo_id,))
                 conn.commit()
                 
-                # Sincronización instantánea RAM
                 st.session_state["lotes_df"] = st.session_state["lotes_df"][st.session_state["lotes_df"]["id_pbo"] != pbo_id]
                 st.session_state["paletas_df"] = st.session_state["paletas_df"][st.session_state["paletas_df"]["id_pbo"] != pbo_id]
                 st.session_state["reprocesos_df"] = st.session_state["reprocesos_df"][st.session_state["reprocesos_df"]["id_pbo"] != pbo_id]
@@ -219,8 +214,8 @@ elif "Calidad" in departamento:
             
             st.write("#### 📦 Desglose de Unidades Retenidas")
             col1, col2 = st.columns(2)
-            cant_paletas = col1.number_input("Cantidad de Paletas Retenidas", min_value=0, value=1, step=1)
-            cant_camadas = col2.number_input("Cantidad de Camadas Retenidas", min_value=0, value=0, step=1)
+            cant_paletas = col1.number_input("Cantidad de Paletas Completas Retenidas", min_value=0, value=1, step=1)
+            cant_camadas = col2.number_input("Cantidad de Camadas Sueltas (Incompletas)", min_value=0, value=0, step=1)
             
             # --- 🔢 CÁLCULO DE CAPACIDAD AUTOMÁTICO ---
             latas_por_paleta = 9912 if formato == "8.4 oz" else 7752
@@ -228,8 +223,11 @@ elif "Calidad" in departamento:
             
             st.info(f"🔢 **Cantidad Total de Latas Calculada:** {total_latas:,} latas (Paletas: {cant_paletas} x {latas_por_paleta} | Camadas: {cant_camadas} x 472)")
             
-            # --- 📋 GENERACIÓN AUTOMÁTICA DE FILAS ---
-            tipos_lista = ["Paleta"] * cant_paletas + ["Camada"] * cant_camadas
+            # --- 📋 GENERACIÓN AUTOMÁTICA DE FILAS AGRUPADAS ---
+            tipos_lista = ["Paleta"] * cant_paletas
+            if cant_camadas > 0:
+                tipos_lista.append(f"Camadas Sueltas ({cant_camadas})") # Agrupado en una sola fila
+                
             df_plantilla = pd.DataFrame({
                 "Tipo": tipos_lista,
                 "Nro Ticket": [""] * len(tipos_lista),
@@ -238,7 +236,7 @@ elif "Calidad" in departamento:
                 "Estatus": ["Sin reprocesar"] * len(tipos_lista)
             })
             
-            st.write("📝 **Asigne los números de Ticket respectivos para cada unidad:**")
+            st.write("📝 **Asigne los números de Ticket respectivos para cada unidad (Física):**")
             tabla_ingreso = st.data_editor(df_plantilla, hide_index=True, use_container_width=True, disabled=["Tipo", "Defecto Específico", "Estatus"])
             
             if st.button("💾 Guardar PBO Completo e Inyectar en Red"):
@@ -255,13 +253,13 @@ elif "Calidad" in departamento:
                     nuevo_id_pbo = f"PBO-{total_historicos + total_activos + 1:03d} ({prod})"
                     
                     try:
-                        # Guardar PBO macro
                         cursor.execute("INSERT INTO lotes_db VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Almacen de PBO');", (nuevo_id_pbo, prod, formato, lote_prod, orden_prod, str(fecha_p), defecto_gen, int(total_latas)))
                         
-                        # Inyectar unidades asociadas
                         nuevas_paletas_lista = []
                         for _, fila in tabla_ingreso.iterrows():
-                            n_camadas = 0 if fila["Tipo"] == "Paleta" else 1
+                            # Si es la fila agrupada de camadas sueltas, guarda la cantidad. Si es paleta, guarda 0.
+                            n_camadas = cant_camadas if "Camadas Sueltas" in fila["Tipo"] else 0
+                            
                             cursor.execute("INSERT INTO paletas_db (id_pbo, nro_ticket, camadas_sueltas, defecto, nca, estatus) VALUES (%s, %s, %s, %s, %s, %s);", (nuevo_id_pbo, fila["Nro Ticket"], n_camadas, fila["Defecto Específico"], float(fila["% NCA"]), fila["Estatus"]))
                             nuevas_paletas_lista.append({
                                 "id_pbo": nuevo_id_pbo, "nro_ticket": fila["Nro Ticket"], "camadas_sueltas": n_camadas,
@@ -270,7 +268,6 @@ elif "Calidad" in departamento:
                             
                         conn.commit()
                         
-                        # Optimistic Update en RAM
                         nueva_fila_lote = pd.DataFrame([{
                             "id_pbo": nuevo_id_pbo, "producto": prod, "formato": formato, "lote": lote_prod,
                             "orden": orden_prod, "fecha_produccion": str(fecha_p), "defecto_general": defecto_gen,
@@ -406,16 +403,19 @@ elif "Reproceso" in departamento:
                 st.write("#### 📦 Desglose de Unidades GENERADAS (Post-Reproceso)")
                 col_rep1, col_rep2 = st.columns(2)
                 rep_paletas = col_rep1.number_input("Cantidad de Paletas Generadas", min_value=0, value=1, step=1)
-                rep_camadas = col_rep2.number_input("Cantidad de Camadas Generadas", min_value=0, value=0, step=1)
+                rep_camadas = col_rep2.number_input("Cantidad de Camadas Generadas (Incompletas)", min_value=0, value=0, step=1)
                 
-                # --- 📋 FILAS DINÁMICAS EN REPROCESO ---
-                tipos_rep_lista = ["Paleta"] * rep_paletas + ["Camada"] * rep_camadas
+                # --- 📋 FILAS DINÁMICAS EN REPROCESO (AGRUPADO) ---
+                tipos_rep_lista = ["Paleta"] * rep_paletas
+                if rep_camadas > 0:
+                    tipos_rep_lista.append(f"Camadas Sueltas ({rep_camadas})")
+                    
                 df_plantilla_rep = pd.DataFrame({
                     "Tipo": tipos_rep_lista,
                     "Nuevo Ticket Reprocesado": [""] * len(tipos_rep_lista)
                 })
                 
-                st.write("📋 **Asigne el número de ticket correspondiente generado:**")
+                st.write("📋 **Asigne el número de ticket correspondiente generado (Físico):**")
                 tabla_reproceso = st.data_editor(df_plantilla_rep, hide_index=True, use_container_width=True, disabled=["Tipo"])
                 
                 if st.button("🚀 Registrar Cierre de Línea"):
@@ -430,7 +430,8 @@ elif "Reproceso" in departamento:
                         
                         try:
                             for _, fila in tabla_reproceso.iterrows():
-                                n_camadas_rep = 0 if fila["Tipo"] == "Paleta" else 1
+                                n_camadas_rep = rep_camadas if "Camadas Sueltas" in fila["Tipo"] else 0
+                                
                                 cursor.execute("INSERT INTO reproceso_db (id_pbo, tickets_originales_consumidos, nuevo_ticket_reprocesado, camadas_sueltas, estatus_calidad, estatus_logistica, observacion_laboratorio) VALUES (%s, %s, %s, %s, 'En Control de Calidad', 'En espera', 'Pendiente por evaluar');", (pbo_target, cadena_consumidos, fila["Nuevo Ticket Reprocesado"], n_camadas_rep))
                                 nuevas_filas_rep.append({
                                     "id_pbo": pbo_target, "tickets_originales_consumidos": cadena_consumidos,
