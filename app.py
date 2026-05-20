@@ -13,10 +13,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# Inicializar un disparador en el estado de la sesión para controlar la actualización de caché
-if "refresh_db" not in st.session_state:
-    st.session_state["refresh_db"] = False
-
 # --- LOGO OFICIAL ---
 logo_url = "https://empresaspolar.com"
 try:
@@ -28,7 +24,7 @@ st.title("📋 Producto Bajo Observación (PBO)")
 st.caption("Sistema interno de control y monitoreo de producto retenido — Empresas Polar")
 
 # ==========================================
-# 2. CONEXIÓN Y GESTIÓN DE BASE DE DATOS TRIPLE-OPTIMIZADA
+# 2. CONEXIÓN Y GESTIÓN DE BASE DE DATOS
 # ==========================================
 def get_db_connection():
     return psycopg2.connect(
@@ -75,46 +71,48 @@ def init_db():
 try:
     init_db()
 except Exception as e:
-    st.error(f"Error de red: {e}")
+    st.error(f"Error de conexión inicial: {e}")
 
-# --- 🚀 CONTROL DE CACHÉ DE ALTA VELOCIDAD ---
-@st.cache_data(ttl=60, show_spinner="Cargando datos de planta desde Brasil...")
-def cargar_datos_infraestructura(trigger_refresh):
-    """Carga todas las tablas principales en un solo viaje de red y las almacena en RAM"""
+# --- 🚀 ARQUITECTURA DE DATOS ULTRA-VELOZ EN MEMORIA LOCAL ---
+def cargar_datos_desde_servidor():
+    """Descarga de red masiva (solo ocurre una vez al abrir la app)"""
     conn = get_db_connection()
-    lotes = pd.read_sql_query("SELECT * FROM lotes_db", conn)
-    paletas = pd.read_sql_query("SELECT * FROM paletas_db", conn)
-    reprocesos = pd.read_sql_query("SELECT * FROM reproceso_db", conn)
-    historico = pd.read_sql_query("SELECT * FROM historico_pbo_db", conn)
+    st.session_state["lotes_df"] = pd.read_sql_query("SELECT * FROM lotes_db", conn)
+    st.session_state["paletas_df"] = pd.read_sql_query("SELECT * FROM paletas_db", conn)
+    st.session_state["reprocesos_df"] = pd.read_sql_query("SELECT * FROM reproceso_db", conn)
+    st.session_state["historico_pbo_df"] = pd.read_sql_query("SELECT * FROM historico_pbo_db", conn)
     conn.close()
-    return lotes, paletas, reprocesos, historico
 
-# Carga relámpago asistida por caché
-lotes_activos_df, paletas_activas_df, reprocesos_activos_df, historico_pbo_df = cargar_datos_infraestructura(st.session_state["refresh_db"])
+# Inicialización única del estado de la sesión
+if "lotes_df" not in st.session_state:
+    with st.spinner("Estableciendo enlace de alta velocidad con el servidor de Brasil..."):
+        cargar_datos_desde_servidor()
 
-def forzar_actualizacion_red():
-    """Limpia la memoria caché cuando ocurre una transacción de escritura"""
-    st.cache_data.clear()
-    st.session_state["refresh_db"] = not st.session_state["refresh_db"]
+# Asignación de variables de trabajo directo apuntando a la RAM
+lotes_activos_df = st.session_state["lotes_df"]
+paletas_activas_df = st.session_state["paletas_df"]
+reprocesos_activos_df = st.session_state["reprocesos_df"]
+historico_pbo_df = st.session_state["historico_pbo_df"]
 
-# Listas globales fijas
+# Listas globales de configuración fija
 ESTATUS_OPCIONES = ["Sin reprocesar", "Reprocesado", "Briqueteado", "Aceptado con desviación"]
 ESTATUS_DICTAMEN_CALIDAD = ["En Control de Calidad", "Chequeado", "Liberado"]
 ESTATUS_DICTAMEN_LOGISTICA = ["En espera", "Confirmado", "Inconsistencia"]
 UBICACIONES_LOGISTICA = ["Almacen de PBO", "Transicion", "Almacen de PT"]
 
 # ==========================================
-# 3. AUTOMATIZACIÓN DE CIERRE INDUSTRIAL 
+# 3. AUTOMATIZACIÓN DE CIERRE INDUSTRIAL (OPTIMIZADA)
 # ==========================================
 def ejecutar_higiene_y_cierre_automatico(usuario_actual):
     if lotes_activos_df.empty:
         return
         
     conn = get_db_connection()
+    hubo_cierres = False
+    
     for _, lote in lotes_activos_df.iterrows():
         pbo_id = lote["id_pbo"]
         
-        # Filtrar localmente en memoria en lugar de ir a la base de datos por cada lote
         df_orig = paletas_activas_df[paletas_activas_df["id_pbo"] == pbo_id]
         df_rep = reprocesos_activos_df[reprocesos_activos_df["id_pbo"] == pbo_id]
         
@@ -124,34 +122,55 @@ def ejecutar_higiene_y_cierre_automatico(usuario_actual):
         if condicion_originales and condicion_nuevas:
             cursor = conn.cursor()
             try:
+                # 1. Mover datos macros a históricos en la nube
                 cursor.execute(
                     "INSERT INTO historico_pbo_db VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING;",
                     (pbo_id, lote["producto"], lote["lote"], datetime.now().strftime("%Y-%m-%d %H:%M"), "Cierre Automático Integral", usuario_actual)
                 )
+                # 2. Inserción masiva de registros dependientes
                 for _, row in df_orig.iterrows():
                     cursor.execute("INSERT INTO historico_paletas_db (id_pbo, nro_ticket, camadas_sueltas, defecto, nca, estatus) VALUES (%s, %s, %s, %s, %s, %s);", (pbo_id, row["nro_ticket"], row["camadas_sueltas"], row["defecto"], row["nca"], row["estatus"]))
                 for _, row in df_rep.iterrows():
                     cursor.execute("INSERT INTO historico_reproceso_db (id_pbo, tickets_originales_consumidos, nuevo_ticket_reprocesado, camadas_sueltas, estatus_calidad, estatus_logistica, observacion_laboratorio) VALUES (%s, %s, %s, %s, %s, %s, %s);", (pbo_id, row["tickets_originales_consumidos"], row["nuevo_ticket_reprocesado"], row["camadas_sueltas"], row["estatus_calidad"], row["estatus_logistica"], row["observacion_laboratorio"]))
                 
+                # 3. Limpieza atómica en el servidor
                 cursor.execute("DELETE FROM lotes_db WHERE id_pbo = %s;", (pbo_id,))
                 cursor.execute("DELETE FROM paletas_db WHERE id_pbo = %s;", (pbo_id,))
                 cursor.execute("DELETE FROM reproceso_db WHERE id_pbo = %s;", (pbo_id,))
-                
                 conn.commit()
-                forzar_actualizacion_red()
-                st.rerun()
+                
+                # --- Actualización instantánea de la memoria RAM local ---
+                st.session_state["lotes_df"] = st.session_state["lotes_df"][st.session_state["lotes_df"]["id_pbo"] != pbo_id]
+                st.session_state["paletas_df"] = st.session_state["paletas_df"][st.session_state["paletas_df"]["id_pbo"] != pbo_id]
+                st.session_state["reprocesos_df"] = st.session_state["reprocesos_df"][st.session_state["reprocesos_df"]["id_pbo"] != pbo_id]
+                
+                # Añadir fila al histórico local de manera inmediata
+                nueva_fila_hist = pd.DataFrame([{
+                    "id_pbo": pbo_id, "producto": lote["producto"], "lote": lote["lote"],
+                    "fecha_cierre": datetime.now().strftime("%Y-%m-%d %H:%M"), "motivo_cierre": "Cierre Automático Integral", "operador_cierre": usuario_actual
+                }])
+                st.session_state["historico_pbo_df"] = pd.concat([st.session_state["historico_pbo_df"], nueva_fila_hist], ignore_index=True)
+                hubo_cierres = True
             except Exception as e:
                 conn.rollback()
             finally:
                 cursor.close()
     conn.close()
+    if hubo_cierres:
+        st.rerun()
 
 # ==========================================
-# 4. BARRA LATERAL (CONTROL DE ACCESO)
+# 4. BARRA LATERAL (CONTROL DE ACCESO Y RESET)
 # ==========================================
 st.sidebar.header("🔑 Identificación de Usuario")
 usuario = st.sidebar.text_input("Nombre del Operador", value="Operador de Turno")
 departamento = st.sidebar.selectbox("Selecciona tu Departamento", ["Público / Solo Lectura", "🔬 Calidad", "🛠️ Reproceso / Operaciones", "📦 Logística"])
+
+st.sidebar.divider()
+if st.sidebar.button("🔄 Sincronizar Base de Datos (Nube)"):
+    cargar_datos_desde_servidor()
+    st.sidebar.success("¡Datos actualizados desde Brasil!")
+    st.rerun()
 
 try:
     ejecutar_higiene_y_cierre_automatico(usuario)
@@ -216,8 +235,16 @@ elif "Calidad" in departamento:
                         try:
                             cursor.execute("INSERT INTO lotes_db VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Almacen de PBO');", (nuevo_id_pbo, prod, formato, lote_prod, orden_prod, str(fecha_p), defecto_gen, cant_pbo))
                             conn.commit()
-                            forzar_actualizacion_red()
-                            st.success(f"¡{nuevo_id_pbo} registrado!")
+                            
+                            # Optimistic Update (RAM Local)
+                            nueva_fila_lote = pd.DataFrame([{
+                                "id_pbo": nuevo_id_pbo, "producto": prod, "formato": formato, "lote": lote_prod,
+                                "orden": orden_prod, "fecha_produccion": str(fecha_p), "defecto_general": defecto_gen,
+                                "cantidad_total_latas": int(cant_pbo), "ubicacion": "Almacen de PBO"
+                            }])
+                            st.session_state["lotes_df"] = pd.concat([st.session_state["lotes_df"], nueva_fila_lote], ignore_index=True)
+                            
+                            st.success(f"¡{nuevo_id_pbo} registrado instantáneamente!")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
@@ -240,17 +267,24 @@ elif "Calidad" in departamento:
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     errores = False
+                    nuevas_paletas_lista = []
+                    
                     for _, fila in tabla_ingreso.iterrows():
                         try:
                             cursor.execute("INSERT INTO paletas_db (id_pbo, nro_ticket, camadas_sueltas, defecto, nca, estatus) VALUES (%s, %s, %s, %s, %s, %s);", (pbo_seleccionado, fila["Nro Ticket"], int(fila["Camadas Sueltas"]), fila["Defecto Específico"], float(fila["% NCA"]), fila["Estatus"]))
+                            nuevas_paletas_lista.append({
+                                "id_pbo": pbo_seleccionado, "nro_ticket": fila["Nro Ticket"], "camadas_sueltas": int(fila["Camadas Sueltas"]),
+                                "defecto": fila["Defecto Específico"], "nca": float(fila["% NCA"]), "estatus": fila["Estatus"]
+                            })
                         except:
-                            st.error("Error: El ticket ya existe en la red.")
+                            st.error(f"Error: El ticket {fila['Nro Ticket']} ya existe en la red.")
                             errores = True
                             break
                     if not errores:
                         conn.commit()
-                        forzar_actualizacion_red()
-                        st.success("¡Paletas guardadas!")
+                        # Optimistic Update masivo en RAM
+                        st.session_state["paletas_df"] = pd.concat([st.session_state["paletas_df"], pd.DataFrame(nuevas_paletas_lista)], ignore_index=True)
+                        st.success("¡Bloque de paletas guardado con éxito!")
                         st.rerun()
                     cursor.close()
                     conn.close()
@@ -274,20 +308,25 @@ elif "Calidad" in departamento:
                         if st.form_submit_button("💾 Aplicar Cambios"):
                             conn = get_db_connection()
                             cursor = conn.cursor()
-                            for tkt in tickets_seleccionados:
-                                if mod_estatus != "-- No modificar estatus --":
-                                    cursor.execute("UPDATE paletas_db SET estatus = %s WHERE nro_ticket = %s;", (mod_estatus, tkt))
-                                if escribir_nuevo_defecto and mod_defecto:
-                                    cursor.execute("UPDATE paletas_db SET defecto = %s WHERE nro_ticket = %s;", (mod_defecto, tkt))
-                                if mod_nca != -1.0:
-                                    cursor.execute("UPDATE paletas_db SET nca = %s WHERE nro_ticket = %s;", (mod_nca, tkt))
-                                if mod_camadas != -1:
-                                    cursor.execute("UPDATE paletas_db SET camadas_sueltas = %s WHERE nro_ticket = %s;", (mod_camadas, tkt))
+                            
+                            # --- 🚀 CONTROL DE VIAJE MASIVO (SQL BATCH) ---
+                            if mod_estatus != "-- No modificar estatus --":
+                                cursor.execute("UPDATE paletas_db SET estatus = %s WHERE nro_ticket = ANY(%s);", (mod_estatus, tickets_seleccionados))
+                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "estatus"] = mod_estatus
+                            if escribir_nuevo_defecto and mod_defecto:
+                                cursor.execute("UPDATE paletas_db SET defecto = %s WHERE nro_ticket = ANY(%s);", (mod_defecto, tickets_seleccionados))
+                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "defecto"] = mod_defecto
+                            if mod_nca != -1.0:
+                                cursor.execute("UPDATE paletas_db SET nca = %s WHERE nro_ticket = ANY(%s);", (mod_nca, tickets_seleccionados))
+                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "nca"] = mod_nca
+                            if mod_camadas != -1:
+                                cursor.execute("UPDATE paletas_db SET camadas_sueltas = %s WHERE nro_ticket = ANY(%s);", (mod_camadas, tickets_seleccionados))
+                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "camadas_sueltas"] = int(mod_camadas)
+                                
                             conn.commit()
                             cursor.close()
                             conn.close()
-                            forzar_actualizacion_red()
-                            st.success("¡Base de datos en la nube actualizada!")
+                            st.success("¡Base de datos y RAM local actualizadas en lote!")
                             st.rerun()
 
         elif accion_calidad == "🔬 Dictamen de Reproceso":
@@ -307,13 +346,19 @@ elif "Calidad" in departamento:
                             if observacion_lab:
                                 conn = get_db_connection()
                                 cursor = conn.cursor()
-                                for tkt in tickets_evaluar:
-                                    cursor.execute("UPDATE reproceso_db SET estatus_calidad = %s, observacion_laboratorio = %s WHERE nuevo_ticket_reprocesado = %s;", (nuevo_estatus_rep, f"[{usuario}]: {observacion_lab}", tkt))
+                                msg_firma = f"[{usuario}]: {observacion_lab}"
+                                
+                                # SQL Batch Update
+                                cursor.execute("UPDATE reproceso_db SET estatus_calidad = %s, observacion_laboratorio = %s WHERE nuevo_ticket_reprocesado = ANY(%s);", (nuevo_estatus_rep, msg_firma, tickets_evaluar))
                                 conn.commit()
                                 cursor.close()
                                 conn.close()
-                                forzar_actualizacion_red()
-                                st.success("¡Dictamen grabado!")
+                                
+                                # Optimistic Update en RAM
+                                st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_evaluar), "estatus_calidad"] = nuevo_estatus_rep
+                                st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_evaluar), "observacion_laboratorio"] = msg_firma
+                                
+                                st.success("¡Dictamen grabado de manera masiva!")
                                 st.rerun()
 
         elif accion_calidad == "🗑️ Eliminar PBO":
@@ -326,15 +371,24 @@ elif "Calidad" in departamento:
                     cursor = conn.cursor(cursor_factory=RealDictCursor)
                     cursor.execute("SELECT * FROM lotes_db WHERE id_pbo = %s;", (pbo_a_borrar,))
                     lote_data = cursor.fetchone()
-                    df_orig_del = paletas_activas_df[paletas_activas_df["id_pbo"] == pbo_a_borrar]
-                    df_rep_del = reprocesos_activos_df[reprocesos_activos_df["id_pbo"] == pbo_a_borrar]
                     
                     try:
                         cursor.execute("INSERT INTO historico_pbo_db VALUES (%s, %s, %s, %s, %s, %s);", (pbo_a_borrar, lote_data["producto"], lote_data["lote"], datetime.now().strftime("%Y-%m-%d %H:%M"), f"Cancelado manual por Calidad. Motivo: {motivo_cancelacion}", usuario))
                         cursor.execute("DELETE FROM lotes_db WHERE id_pbo = %s;", (pbo_a_borrar,))
                         conn.commit()
-                        forzar_actualizacion_red()
-                        st.success("¡Caso removido de planta!")
+                        
+                        # Sincronización de RAM local instantánea
+                        st.session_state["lotes_df"] = st.session_state["lotes_df"][st.session_state["lotes_df"]["id_pbo"] != pbo_a_borrar]
+                        st.session_state["paletas_df"] = st.session_state["paletas_df"][st.session_state["paletas_df"]["id_pbo"] != pbo_a_borrar]
+                        st.session_state["reprocesos_df"] = st.session_state["reprocesos_df"][st.session_state["reprocesos_df"]["id_pbo"] != pbo_a_borrar]
+                        
+                        nueva_fila_cancelada = pd.DataFrame([{
+                            "id_pbo": pbo_a_borrar, "producto": lote_data["producto"], "lote": lote_data["lote"],
+                            "fecha_cierre": datetime.now().strftime("%Y-%m-%d %H:%M"), "motivo_cierre": f"Cancelado: {motivo_cancelacion}", "operador_cierre": usuario
+                        }])
+                        st.session_state["historico_pbo_df"] = pd.concat([st.session_state["historico_pbo_df"], nueva_fila_cancelada], ignore_index=True)
+                        
+                        st.success("¡Caso removido de piso en 0.01 segundos!")
                         st.rerun()
                     except Exception as e:
                         conn.rollback()
@@ -368,12 +422,24 @@ elif "Reproceso" in departamento:
                         conn = get_db_connection()
                         cursor = conn.cursor()
                         error_save = False
+                        nuevas_filas_rep = []
+                        
                         try:
                             for _, fila in tabla_reproceso.iterrows():
                                 cursor.execute("INSERT INTO reproceso_db (id_pbo, tickets_originales_consumidos, nuevo_ticket_reprocesado, camadas_sueltas, estatus_calidad, estatus_logistica, observacion_laboratorio) VALUES (%s, %s, %s, %s, 'En Control de Calidad', 'En espera', 'Pendiente por evaluar');", (pbo_target, cadena_consumidos, fila["Nuevo Ticket Reprocesado"], int(fila["Camadas Sueltas"])))
-                            for tkt in tickets_consumidos:
-                                cursor.execute("UPDATE paletas_db SET estatus = 'Reprocesado' WHERE nro_ticket = %s;", (tkt,))
+                                nuevas_filas_rep.append({
+                                    "id_pbo": pbo_target, "tickets_originales_consumidos": cadena_consumidos,
+                                    "nuevo_ticket_reprocesado": fila["Nuevo Ticket Reprocesado"], "camadas_sueltas": int(fila["Camadas Sueltas"]),
+                                    "estatus_calidad": "En Control de Calidad", "estatus_logistica": "En espera", "observacion_laboratorio": "Pendiente por evaluar"
+                                })
+                            
+                            # SQL Batch para cambiar estatus de consumidos
+                            cursor.execute("UPDATE paletas_db SET estatus = 'Reprocesado' WHERE nro_ticket = ANY(%s);", (tickets_consumidos,))
                             conn.commit()
+                            
+                            # Update masivo en RAM local
+                            st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_consumidos), "estatus"] = "Reprocesado"
+                            st.session_state["reprocesos_df"] = pd.concat([st.session_state["reprocesos_df"], pd.DataFrame(nuevas_filas_rep)], ignore_index=True)
                         except:
                             error_save = True
                         finally:
@@ -381,8 +447,7 @@ elif "Reproceso" in departamento:
                             conn.close()
                             
                         if not error_save:
-                            forzar_actualizacion_red()
-                            st.success("¡Lote de reproceso registrado!")
+                            st.success("¡Lote de reproceso acoplado eficientemente!")
                             st.rerun()
 
 elif "Logística" in departamento:
@@ -407,11 +472,14 @@ elif "Logística" in departamento:
                 cursor = conn.cursor()
                 try:
                     cursor.execute("UPDATE lotes_db SET ubicacion = %s WHERE id_pbo = %s;", (nueva_ubica, pbo_log))
-                    for tkt in tickets_log:
-                        cursor.execute("UPDATE reproceso_db SET estatus_logistica = %s WHERE nuevo_ticket_reprocesado = %s;", (nuevo_estado_log, tkt))
+                    st.session_state["lotes_df"].loc[st.session_state["lotes_df"]["id_pbo"] == pbo_log, "ubicacion"] = nueva_ubica
+                    
+                    if tickets_log:
+                        cursor.execute("UPDATE reproceso_db SET estatus_logistica = %s WHERE nuevo_ticket_reprocesado = ANY(%s);", (nuevo_estado_log, tickets_log))
+                        st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_log), "estatus_logistica"] = nuevo_estado_log
+                        
                     conn.commit()
-                    forzar_actualizacion_red()
-                    st.success("¡Inventario verificado!")
+                    st.success("¡Inventario verificado y reubicado!")
                     st.rerun()
                 except Exception as e:
                     pass
@@ -451,18 +519,15 @@ with display_tab3:
         
         if pbo_historico_consultar:
             conn = get_db_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("SELECT * FROM historico_pbo_db WHERE id_pbo = %s;", (pbo_historico_consultar,))
-            datos_historicos_macro = cursor.fetchone()
-            cursor.close()
-            
             df_paletas_historicas = pd.read_sql_query("SELECT * FROM historico_paletas_db WHERE id_pbo = %s", conn, params=[pbo_historico_consultar])
             df_reproceso_historico = pd.read_sql_query("SELECT * FROM historico_reproceso_db WHERE id_pbo = %s", conn, params=[pbo_historico_consultar])
             conn.close()
             
+            macro_data = historico_pbo_df[historico_pbo_df["id_pbo"] == pbo_historico_consultar].iloc[0]
+            
             with st.container(border=True):
                 st.write(f"## 📜 REPORTE OFICIAL: {pbo_historico_consultar}")
-                st.write(f"🏢 **Planta**: Empresas Polar S.A. | 📅 **Fecha**: `{datos_historicos_macro['fecha_cierre']}`")
-                st.write(f"📦 **Producto**: {datos_historicos_macro['producto']} | 🏷️ **Lote**: `{datos_historicos_macro['lote']}`")
-                st.write(f"📌 **Dictamen**: *{datos_historicos_macro['motivo_cierre']}*")
+                st.write(f"🏢 **Planta**: Empresas Polar S.A. | 📅 **Fecha**: `{macro_data['fecha_cierre']}`")
+                st.write(f"📦 **Producto**: {macro_data['producto']} | 🏷️ **Lote**: `{macro_data['lote']}`")
+                st.write(f"📌 **Dictamen**: *{macro_data['motivo_cierre']}*")
                 st.dataframe(df_paletas_historicas, use_container_width=True, hide_index=True)
