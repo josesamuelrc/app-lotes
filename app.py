@@ -85,7 +85,7 @@ def cargar_datos_desde_servidor():
 
 # Inicialización única del estado de la sesión
 if "lotes_df" not in st.session_state:
-    with st.spinner("Estableciendo enlace de alta velocidad con el servidor de Brasil..."):
+    with st.spinner("Estableciendo enlace de alta velocidad con el servidor..."):
         cargar_datos_desde_servidor()
 
 # Asignación de variables de trabajo directo apuntando a la RAM
@@ -101,7 +101,7 @@ ESTATUS_DICTAMEN_LOGISTICA = ["En espera", "Confirmado", "Inconsistencia"]
 UBICACIONES_LOGISTICA = ["Almacen de PBO", "Transicion", "Almacen de PT"]
 
 # ==========================================
-# 3. AUTOMATIZACIÓN DE CIERRE INDUSTRIAL (OPTIMIZADA)
+# 3. AUTOMATIZACIÓN DE CIERRE INDUSTRIAL
 # ==========================================
 def ejecutar_higiene_y_cierre_automatico(usuario_actual):
     if lotes_activos_df.empty:
@@ -122,29 +122,25 @@ def ejecutar_higiene_y_cierre_automatico(usuario_actual):
         if condicion_originales and condicion_nuevas:
             cursor = conn.cursor()
             try:
-                # 1. Mover datos macros a históricos en la nube
                 cursor.execute(
                     "INSERT INTO historico_pbo_db VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING;",
                     (pbo_id, lote["producto"], lote["lote"], datetime.now().strftime("%Y-%m-%d %H:%M"), "Cierre Automático Integral", usuario_actual)
                 )
-                # 2. Inserción masiva de registros dependientes
                 for _, row in df_orig.iterrows():
                     cursor.execute("INSERT INTO historico_paletas_db (id_pbo, nro_ticket, camadas_sueltas, defecto, nca, estatus) VALUES (%s, %s, %s, %s, %s, %s);", (pbo_id, row["nro_ticket"], row["camadas_sueltas"], row["defecto"], row["nca"], row["estatus"]))
                 for _, row in df_rep.iterrows():
                     cursor.execute("INSERT INTO historico_reproceso_db (id_pbo, tickets_originales_consumidos, nuevo_ticket_reprocesado, camadas_sueltas, estatus_calidad, estatus_logistica, observacion_laboratorio) VALUES (%s, %s, %s, %s, %s, %s, %s);", (pbo_id, row["tickets_originales_consumidos"], row["nuevo_ticket_reprocesado"], row["camadas_sueltas"], row["estatus_calidad"], row["estatus_logistica"], row["observacion_laboratorio"]))
                 
-                # 3. Limpieza atómica en el servidor
                 cursor.execute("DELETE FROM lotes_db WHERE id_pbo = %s;", (pbo_id,))
                 cursor.execute("DELETE FROM paletas_db WHERE id_pbo = %s;", (pbo_id,))
                 cursor.execute("DELETE FROM reproceso_db WHERE id_pbo = %s;", (pbo_id,))
                 conn.commit()
                 
-                # --- Actualización instantánea de la memoria RAM local ---
+                # Sincronización instantánea RAM
                 st.session_state["lotes_df"] = st.session_state["lotes_df"][st.session_state["lotes_df"]["id_pbo"] != pbo_id]
                 st.session_state["paletas_df"] = st.session_state["paletas_df"][st.session_state["paletas_df"]["id_pbo"] != pbo_id]
                 st.session_state["reprocesos_df"] = st.session_state["reprocesos_df"][st.session_state["reprocesos_df"]["id_pbo"] != pbo_id]
                 
-                # Añadir fila al histórico local de manera inmediata
                 nueva_fila_hist = pd.DataFrame([{
                     "id_pbo": pbo_id, "producto": lote["producto"], "lote": lote["lote"],
                     "fecha_cierre": datetime.now().strftime("%Y-%m-%d %H:%M"), "motivo_cierre": "Cierre Automático Integral", "operador_cierre": usuario_actual
@@ -160,7 +156,7 @@ def ejecutar_higiene_y_cierre_automatico(usuario_actual):
         st.rerun()
 
 # ==========================================
-# 4. BARRA LATERAL (CONTROL DE ACCESO Y RESET)
+# 4. BARRA LATERAL (CONTROLES)
 # ==========================================
 st.sidebar.header("🔑 Identificación de Usuario")
 usuario = st.sidebar.text_input("Nombre del Operador", value="Operador de Turno")
@@ -169,7 +165,7 @@ departamento = st.sidebar.selectbox("Selecciona tu Departamento", ["Público / S
 st.sidebar.divider()
 if st.sidebar.button("🔄 Sincronizar Base de Datos (Nube)"):
     cargar_datos_desde_servidor()
-    st.sidebar.success("¡Datos actualizados desde Brasil!")
+    st.sidebar.success("¡Datos actualizados!")
     st.rerun()
 
 try:
@@ -178,7 +174,7 @@ except:
     pass
 
 # ==========================================
-# 5. PANEL DE CONTROL GENERAL (KPIs INDUSTRIALES)
+# 5. PANEL DE CONTROL GENERAL (KPIs)
 # ==========================================
 st.subheader("📊 Panel de Control PBO Activo")
 
@@ -206,88 +202,91 @@ if departamento == "Público / Solo Lectura":
 
 elif "Calidad" in departamento:
     st.error("🔒 Permisos de Nivel: CALIDAD")
-    accion_calidad = st.radio("¿Qué acción deseas ejecutar?", ["➕ Crear Nuevo PBO", "📦 Añadir Paletas", "🔄 Actualización de Paletas", "🔬 Dictamen de Reproceso", "🗑️ Eliminar PBO"], horizontal=True)
+    accion_calidad = st.radio("¿Qué acción deseas ejecutar?", ["➕ Crear Nuevo PBO", "🔄 Actualización de Paletas", "🔬 Dictamen de Reproceso", "🗑️ Eliminar PBO"], horizontal=True)
     st.divider()
 
     if lotes_activos_df.empty and accion_calidad != "➕ Crear Nuevo PBO":
         st.warning("No hay casos PBO activos en planta en este momento.")
     else:
         if accion_calidad == "➕ Crear Nuevo PBO":
-            with st.form("form_crear_pbo", clear_on_submit=True):
-                st.write("### Crear Encabezado Macro de PBO")
-                prod = st.text_input("Producto (Ej: Malta Polar)")
-                formato = st.selectbox("Formato de Envase", ["8.4 oz", "12oz Sleek", "355ml Regular"])
-                lote_prod = st.text_input("Lote de Producción")
-                orden_prod = st.text_input("Orden de Fabricación (SAP)")
-                fecha_p = st.date_input("Fecha de Producción", datetime.now())
-                defecto_gen = st.text_input("Defecto General Detectado")
-                cant_pbo = st.number_input("Cantidad Total de Latas Involucradas", min_value=1, value=1000)
-                
-                if st.form_submit_button("Generar PBO en Base de Datos"):
-                    if prod and lote_prod and orden_prod and defecto_gen:
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM historico_pbo_db;")
-                        total_historicos = cursor.fetchone()[0]
-                        total_activos = len(lotes_activos_df)
-                        nuevo_id_pbo = f"PBO-{total_historicos + total_activos + 1:03d} ({prod})"
-                        
-                        try:
-                            cursor.execute("INSERT INTO lotes_db VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Almacen de PBO');", (nuevo_id_pbo, prod, formato, lote_prod, orden_prod, str(fecha_p), defecto_gen, cant_pbo))
-                            conn.commit()
-                            
-                            # Optimistic Update (RAM Local)
-                            nueva_fila_lote = pd.DataFrame([{
-                                "id_pbo": nuevo_id_pbo, "producto": prod, "formato": formato, "lote": lote_prod,
-                                "orden": orden_prod, "fecha_produccion": str(fecha_p), "defecto_general": defecto_gen,
-                                "cantidad_total_latas": int(cant_pbo), "ubicacion": "Almacen de PBO"
-                            }])
-                            st.session_state["lotes_df"] = pd.concat([st.session_state["lotes_df"], nueva_fila_lote], ignore_index=True)
-                            
-                            st.success(f"¡{nuevo_id_pbo} registrado instantáneamente!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                        finally:
-                            cursor.close()
-                            conn.close()
-
-        elif accion_calidad == "📦 Añadir Paletas":
-            pbo_seleccionado = st.selectbox("Selecciona el PBO específico", lotes_activos_df["id_pbo"])
-            defecto_heredado = lotes_activos_df[lotes_activos_df["id_pbo"] == pbo_seleccionado]["defecto_general"].values[0]
-            num_paletas_a_crear = st.number_input("¿Cuántas paletas/tickets?", min_value=1, max_value=20, value=3)
+            st.write("### Crear Encabezado Macro y Unidades de PBO")
+            prod = st.text_input("Producto (Ej: Malta Polar)")
+            formato = st.selectbox("Formato de Envase", ["8.4 oz", "12 oz Sleek"])
+            lote_prod = st.text_input("Lote de Producción")
+            orden_prod = st.text_input("Orden de Fabricación (SAP)")
+            fecha_p = st.date_input("Fecha de Producción", datetime.now())
+            defecto_gen = st.text_input("Defecto General Detectado")
             
-            df_plantilla = pd.DataFrame({"Nro Ticket": [""] * num_paletas_a_crear, "Camadas Sueltas": [0] * num_paletas_a_crear, "Defecto Específico": [defecto_heredado] * num_paletas_a_crear, "% NCA": [0.0] * num_paletas_a_crear, "Estatus": ["Sin reprocesar"] * num_paletas_a_crear})
-            tabla_ingreso = st.data_editor(df_plantilla, hide_index=True, use_container_width=True)
+            st.write("#### 📦 Desglose de Unidades Retenidas")
+            col1, col2 = st.columns(2)
+            cant_paletas = col1.number_input("Cantidad de Paletas Retenidas", min_value=0, value=1, step=1)
+            cant_camadas = col2.number_input("Cantidad de Camadas Retenidas", min_value=0, value=0, step=1)
             
-            if st.button("💾 Guardar Bloque de Paletas"):
-                if "" in tabla_ingreso["Nro Ticket"].values: 
-                    st.error("Error: Llene los números de ticket.")
+            # --- 🔢 CÁLCULO DE CAPACIDAD AUTOMÁTICO ---
+            latas_por_paleta = 9912 if formato == "8.4 oz" else 7752
+            total_latas = (cant_paletas * latas_por_paleta) + (cant_camadas * 472)
+            
+            st.info(f"🔢 **Cantidad Total de Latas Calculada:** {total_latas:,} latas (Paletas: {cant_paletas} x {latas_por_paleta} | Camadas: {cant_camadas} x 472)")
+            
+            # --- 📋 GENERACIÓN AUTOMÁTICA DE FILAS ---
+            tipos_lista = ["Paleta"] * cant_paletas + ["Camada"] * cant_camadas
+            df_plantilla = pd.DataFrame({
+                "Tipo": tipos_lista,
+                "Nro Ticket": [""] * len(tipos_lista),
+                "Defecto Específico": [defecto_gen] * len(tipos_lista),
+                "% NCA": [0.0] * len(tipos_lista),
+                "Estatus": ["Sin reprocesar"] * len(tipos_lista)
+            })
+            
+            st.write("📝 **Asigne los números de Ticket respectivos para cada unidad:**")
+            tabla_ingreso = st.data_editor(df_plantilla, hide_index=True, use_container_width=True, disabled=["Tipo", "Defecto Específico", "Estatus"])
+            
+            if st.button("💾 Guardar PBO Completo e Inyectar en Red"):
+                if not prod or not lote_prod or not orden_prod or not defecto_gen:
+                    st.error("Error: Llene todos los campos del encabezado macro.")
+                elif "" in tabla_ingreso["Nro Ticket"].values:
+                    st.error("Error: Todos los campos 'Nro Ticket' en la tabla deben estar llenos.")
                 else:
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    errores = False
-                    nuevas_paletas_lista = []
+                    cursor.execute("SELECT COUNT(*) FROM historico_pbo_db;")
+                    total_historicos = cursor.fetchone()[0]
+                    total_activos = len(lotes_activos_df)
+                    nuevo_id_pbo = f"PBO-{total_historicos + total_activos + 1:03d} ({prod})"
                     
-                    for _, fila in tabla_ingreso.iterrows():
-                        try:
-                            cursor.execute("INSERT INTO paletas_db (id_pbo, nro_ticket, camadas_sueltas, defecto, nca, estatus) VALUES (%s, %s, %s, %s, %s, %s);", (pbo_seleccionado, fila["Nro Ticket"], int(fila["Camadas Sueltas"]), fila["Defecto Específico"], float(fila["% NCA"]), fila["Estatus"]))
+                    try:
+                        # Guardar PBO macro
+                        cursor.execute("INSERT INTO lotes_db VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Almacen de PBO');", (nuevo_id_pbo, prod, formato, lote_prod, orden_prod, str(fecha_p), defecto_gen, int(total_latas)))
+                        
+                        # Inyectar unidades asociadas
+                        nuevas_paletas_lista = []
+                        for _, fila in tabla_ingreso.iterrows():
+                            n_camadas = 0 if fila["Tipo"] == "Paleta" else 1
+                            cursor.execute("INSERT INTO paletas_db (id_pbo, nro_ticket, camadas_sueltas, defecto, nca, estatus) VALUES (%s, %s, %s, %s, %s, %s);", (nuevo_id_pbo, fila["Nro Ticket"], n_camadas, fila["Defecto Específico"], float(fila["% NCA"]), fila["Estatus"]))
                             nuevas_paletas_lista.append({
-                                "id_pbo": pbo_seleccionado, "nro_ticket": fila["Nro Ticket"], "camadas_sueltas": int(fila["Camadas Sueltas"]),
+                                "id_pbo": nuevo_id_pbo, "nro_ticket": fila["Nro Ticket"], "camadas_sueltas": n_camadas,
                                 "defecto": fila["Defecto Específico"], "nca": float(fila["% NCA"]), "estatus": fila["Estatus"]
                             })
-                        except:
-                            st.error(f"Error: El ticket {fila['Nro Ticket']} ya existe en la red.")
-                            errores = True
-                            break
-                    if not errores:
+                            
                         conn.commit()
-                        # Optimistic Update masivo en RAM
+                        
+                        # Optimistic Update en RAM
+                        nueva_fila_lote = pd.DataFrame([{
+                            "id_pbo": nuevo_id_pbo, "producto": prod, "formato": formato, "lote": lote_prod,
+                            "orden": orden_prod, "fecha_produccion": str(fecha_p), "defecto_general": defecto_gen,
+                            "cantidad_total_latas": int(total_latas), "ubicacion": "Almacen de PBO"
+                        }])
+                        st.session_state["lotes_df"] = pd.concat([st.session_state["lotes_df"], nueva_fila_lote], ignore_index=True)
                         st.session_state["paletas_df"] = pd.concat([st.session_state["paletas_df"], pd.DataFrame(nuevas_paletas_lista)], ignore_index=True)
-                        st.success("¡Bloque de paletas guardado con éxito!")
+                        
+                        st.success(f"¡{nuevo_id_pbo} guardado exitosamente con sus unidades asociadas!")
                         st.rerun()
-                    cursor.close()
-                    conn.close()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Error en inserción: {e}. Verifique si algún ticket ya se encuentra duplicado en planta.")
+                    finally:
+                        cursor.close()
+                        conn.close()
 
         elif accion_calidad == "🔄 Actualización de Paletas":
             pbo_ver = st.selectbox("Filtra por PBO:", lotes_activos_df["id_pbo"])
@@ -298,36 +297,34 @@ elif "Calidad" in departamento:
             else:
                 tickets_seleccionados = st.multiselect("Tickets a actualizar:", options=df_paletas_pbo["nro_ticket"].unique())
                 if tickets_seleccionados:
-                    with st.form("form_guardado_unico_directo"):
-                        mod_estatus = st.selectbox("Cambiar Estatus Operacional a:", ["-- No modificar estatus --"] + ESTATUS_OPCIONES)
-                        escribir_nuevo_defecto = st.checkbox("Modificar defecto")
-                        mod_defecto = st.text_input("Nuevo Defecto:", disabled=not escribir_nuevo_defecto)
-                        mod_nca = st.number_input("Modificar % NCA (-1 para ignorar):", min_value=-1.0, value=-1.0)
-                        mod_camadas = st.number_input("Actualizar Nro Camadas (-1 para ignorar):", min_value=-1, value=-1)
+                    mod_estatus = st.selectbox("Cambiar Estatus Operacional a:", ["-- No modificar estatus --"] + ESTATUS_OPCIONES)
+                    escribir_nuevo_defecto = st.checkbox("Modificar defecto")
+                    mod_defecto = st.text_input("Nuevo Defecto:", disabled=not escribir_nuevo_defecto)
+                    mod_nca = st.number_input("Modificar % NCA (-1 para ignorar):", min_value=-1.0, value=-1.0)
+                    mod_camadas = st.number_input("Actualizar Nro Camadas (-1 para ignorar):", min_value=-1, value=-1)
+                    
+                    if st.button("💾 Aplicar Cambios en Lote"):
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
                         
-                        if st.form_submit_button("💾 Aplicar Cambios"):
-                            conn = get_db_connection()
-                            cursor = conn.cursor()
+                        if mod_estatus != "-- No modificar estatus --":
+                            cursor.execute("UPDATE paletas_db SET estatus = %s WHERE nro_ticket = ANY(%s);", (mod_estatus, tickets_seleccionados))
+                            st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "estatus"] = mod_estatus
+                        if escribir_nuevo_defecto and mod_defecto:
+                            cursor.execute("UPDATE paletas_db SET defecto = %s WHERE nro_ticket = ANY(%s);", (mod_defecto, tickets_seleccionados))
+                            st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "defecto"] = mod_defecto
+                        if mod_nca != -1.0:
+                            cursor.execute("UPDATE paletas_db SET nca = %s WHERE nro_ticket = ANY(%s);", (mod_nca, tickets_seleccionados))
+                            st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "nca"] = mod_nca
+                        if mod_camadas != -1:
+                            cursor.execute("UPDATE paletas_db SET camadas_sueltas = %s WHERE nro_ticket = ANY(%s);", (mod_camadas, tickets_seleccionados))
+                            st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "camadas_sueltas"] = int(mod_camadas)
                             
-                            # --- 🚀 CONTROL DE VIAJE MASIVO (SQL BATCH) ---
-                            if mod_estatus != "-- No modificar estatus --":
-                                cursor.execute("UPDATE paletas_db SET estatus = %s WHERE nro_ticket = ANY(%s);", (mod_estatus, tickets_seleccionados))
-                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "estatus"] = mod_estatus
-                            if escribir_nuevo_defecto and mod_defecto:
-                                cursor.execute("UPDATE paletas_db SET defecto = %s WHERE nro_ticket = ANY(%s);", (mod_defecto, tickets_seleccionados))
-                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "defecto"] = mod_defecto
-                            if mod_nca != -1.0:
-                                cursor.execute("UPDATE paletas_db SET nca = %s WHERE nro_ticket = ANY(%s);", (mod_nca, tickets_seleccionados))
-                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "nca"] = mod_nca
-                            if mod_camadas != -1:
-                                cursor.execute("UPDATE paletas_db SET camadas_sueltas = %s WHERE nro_ticket = ANY(%s);", (mod_camadas, tickets_seleccionados))
-                                st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_seleccionados), "camadas_sueltas"] = int(mod_camadas)
-                                
-                            conn.commit()
-                            cursor.close()
-                            conn.close()
-                            st.success("¡Base de datos y RAM local actualizadas en lote!")
-                            st.rerun()
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success("¡Base de datos y RAM local actualizadas en lote!")
+                        st.rerun()
 
         elif accion_calidad == "🔬 Dictamen de Reproceso":
             pbo_evaluar = st.selectbox("Selecciona el PBO a dictaminar:", lotes_activos_df["id_pbo"])
@@ -338,28 +335,25 @@ elif "Calidad" in departamento:
             else:
                 tickets_evaluar = st.multiselect("Tickets de reproceso a dictaminar:", options=df_reproceso_pbo["nuevo_ticket_reprocesado"].unique())
                 if tickets_evaluar:
-                    with st.form("form_dictamen_masivo_lab"):
-                        nuevo_estatus_rep = st.selectbox("Estatus Dictamen Control de Calidad:", ESTATUS_DICTAMEN_CALIDAD)
-                        observacion_lab = st.text_area("Observación Técnica:")
-                        
-                        if st.form_submit_button("💾 Estampar Firma"):
-                            if observacion_lab:
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                msg_firma = f"[{usuario}]: {observacion_lab}"
-                                
-                                # SQL Batch Update
-                                cursor.execute("UPDATE reproceso_db SET estatus_calidad = %s, observacion_laboratorio = %s WHERE nuevo_ticket_reprocesado = ANY(%s);", (nuevo_estatus_rep, msg_firma, tickets_evaluar))
-                                conn.commit()
-                                cursor.close()
-                                conn.close()
-                                
-                                # Optimistic Update en RAM
-                                st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_evaluar), "estatus_calidad"] = nuevo_estatus_rep
-                                st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_evaluar), "observacion_laboratorio"] = msg_firma
-                                
-                                st.success("¡Dictamen grabado de manera masiva!")
-                                st.rerun()
+                    nuevo_estatus_rep = st.selectbox("Estatus Dictamen Control de Calidad:", ESTATUS_DICTAMEN_CALIDAD)
+                    observacion_lab = st.text_area("Observación Técnica:")
+                    
+                    if st.button("💾 Estampar Firma"):
+                        if observacion_lab:
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            msg_firma = f"[{usuario}]: {observacion_lab}"
+                            
+                            cursor.execute("UPDATE reproceso_db SET estatus_calidad = %s, observacion_laboratorio = %s WHERE nuevo_ticket_reprocesado = ANY(%s);", (nuevo_estatus_rep, msg_firma, tickets_evaluar))
+                            conn.commit()
+                            cursor.close()
+                            conn.close()
+                            
+                            st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_evaluar), "estatus_calidad"] = nuevo_estatus_rep
+                            st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_evaluar), "observacion_laboratorio"] = msg_firma
+                            
+                            st.success("¡Dictamen grabado de manera masiva!")
+                            st.rerun()
 
         elif accion_calidad == "🗑️ Eliminar PBO":
             pbo_a_borrar = st.selectbox("Selecciona el caso PBO a remover:", lotes_activos_df["id_pbo"])
@@ -377,7 +371,6 @@ elif "Calidad" in departamento:
                         cursor.execute("DELETE FROM lotes_db WHERE id_pbo = %s;", (pbo_a_borrar,))
                         conn.commit()
                         
-                        # Sincronización de RAM local instantánea
                         st.session_state["lotes_df"] = st.session_state["lotes_df"][st.session_state["lotes_df"]["id_pbo"] != pbo_a_borrar]
                         st.session_state["paletas_df"] = st.session_state["paletas_df"][st.session_state["paletas_df"]["id_pbo"] != pbo_a_borrar]
                         st.session_state["reprocesos_df"] = st.session_state["reprocesos_df"][st.session_state["reprocesos_df"]["id_pbo"] != pbo_a_borrar]
@@ -410,13 +403,24 @@ elif "Reproceso" in departamento:
             tickets_consumidos = st.multiselect("Tickets ORIGINALES consumidos:", options=df_originales_pbo["nro_ticket"].unique())
         
             if tickets_consumidos:
-                num_nuevos_tickets = st.number_input("¿Cuántas paletas NUEVAS se generaron?", min_value=1, value=2)
-                df_plantilla_rep = pd.DataFrame({"Nuevo Ticket Reprocesado": [""] * num_nuevos_tickets, "Camadas Sueltas": [0] * num_nuevos_tickets})
-                tabla_reproceso = st.data_editor(df_plantilla_rep, hide_index=True, use_container_width=True)
+                st.write("#### 📦 Desglose de Unidades GENERADAS (Post-Reproceso)")
+                col_rep1, col_rep2 = st.columns(2)
+                rep_paletas = col_rep1.number_input("Cantidad de Paletas Generadas", min_value=0, value=1, step=1)
+                rep_camadas = col_rep2.number_input("Cantidad de Camadas Generadas", min_value=0, value=0, step=1)
+                
+                # --- 📋 FILAS DINÁMICAS EN REPROCESO ---
+                tipos_rep_lista = ["Paleta"] * rep_paletas + ["Camada"] * rep_camadas
+                df_plantilla_rep = pd.DataFrame({
+                    "Tipo": tipos_rep_lista,
+                    "Nuevo Ticket Reprocesado": [""] * len(tipos_rep_lista)
+                })
+                
+                st.write("📋 **Asigne el número de ticket correspondiente generado:**")
+                tabla_reproceso = st.data_editor(df_plantilla_rep, hide_index=True, use_container_width=True, disabled=["Tipo"])
                 
                 if st.button("🚀 Registrar Cierre de Línea"):
                     if "" in tabla_reproceso["Nuevo Ticket Reprocesado"].values: 
-                        st.error("Rellene los tickets generados.")
+                        st.error("Error: Por favor, complete todos los campos de 'Nuevo Ticket Reprocesado'.")
                     else:
                         cadena_consumidos = ", ".join(tickets_consumidos)
                         conn = get_db_connection()
@@ -426,22 +430,23 @@ elif "Reproceso" in departamento:
                         
                         try:
                             for _, fila in tabla_reproceso.iterrows():
-                                cursor.execute("INSERT INTO reproceso_db (id_pbo, tickets_originales_consumidos, nuevo_ticket_reprocesado, camadas_sueltas, estatus_calidad, estatus_logistica, observacion_laboratorio) VALUES (%s, %s, %s, %s, 'En Control de Calidad', 'En espera', 'Pendiente por evaluar');", (pbo_target, cadena_consumidos, fila["Nuevo Ticket Reprocesado"], int(fila["Camadas Sueltas"])))
+                                n_camadas_rep = 0 if fila["Tipo"] == "Paleta" else 1
+                                cursor.execute("INSERT INTO reproceso_db (id_pbo, tickets_originales_consumidos, nuevo_ticket_reprocesado, camadas_sueltas, estatus_calidad, estatus_logistica, observacion_laboratorio) VALUES (%s, %s, %s, %s, 'En Control de Calidad', 'En espera', 'Pendiente por evaluar');", (pbo_target, cadena_consumidos, fila["Nuevo Ticket Reprocesado"], n_camadas_rep))
                                 nuevas_filas_rep.append({
                                     "id_pbo": pbo_target, "tickets_originales_consumidos": cadena_consumidos,
-                                    "nuevo_ticket_reprocesado": fila["Nuevo Ticket Reprocesado"], "camadas_sueltas": int(fila["Camadas Sueltas"]),
+                                    "nuevo_ticket_reprocesado": fila["Nuevo Ticket Reprocesado"], "camadas_sueltas": n_camadas_rep,
                                     "estatus_calidad": "En Control de Calidad", "estatus_logistica": "En espera", "observacion_laboratorio": "Pendiente por evaluar"
                                 })
                             
-                            # SQL Batch para cambiar estatus de consumidos
                             cursor.execute("UPDATE paletas_db SET estatus = 'Reprocesado' WHERE nro_ticket = ANY(%s);", (tickets_consumidos,))
                             conn.commit()
                             
-                            # Update masivo en RAM local
                             st.session_state["paletas_df"].loc[st.session_state["paletas_df"]["nro_ticket"].isin(tickets_consumidos), "estatus"] = "Reprocesado"
                             st.session_state["reprocesos_df"] = pd.concat([st.session_state["reprocesos_df"], pd.DataFrame(nuevas_filas_rep)], ignore_index=True)
-                        except:
+                        except Exception as e:
+                            conn.rollback()
                             error_save = True
+                            st.error(f"Error de base de datos: {e}")
                         finally:
                             cursor.close()
                             conn.close()
@@ -455,40 +460,39 @@ elif "Logística" in departamento:
     if lotes_activos_df.empty: 
         st.info("No hay casos PBO activos.")
     else:
-        with st.form("form_unificado_logistica"):
-            pbo_log = st.selectbox("Selecciona el PBO a gestionar:", lotes_activos_df["id_pbo"])
-            nueva_ubica = st.selectbox("Reubicar lote físico completo:", UBICACIONES_LOGISTICA)
-            df_rep_pbo = reprocesos_activos_df[reprocesos_activos_df["id_pbo"] == pbo_log] if not reprocesos_activos_df.empty else pd.DataFrame()
-            
-            if df_rep_pbo.empty:
-                st.warning("Este caso aún no cuenta con paletas de reproceso.")
-                tickets_log = []; nuevo_estado_log = "En espera"
-            else:
-                tickets_log = st.multiselect("Tickets nuevos validados en físico:", options=df_rep_pbo["nuevo_ticket_reprocesado"].unique())
-                nuevo_estado_log = st.selectbox("Estatus de Verificación Logística:", ESTATUS_DICTAMEN_LOGISTICA)
-            
-            if st.form_submit_button("💾 Confirmar Movimiento"):
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                try:
-                    cursor.execute("UPDATE lotes_db SET ubicacion = %s WHERE id_pbo = %s;", (nueva_ubica, pbo_log))
-                    st.session_state["lotes_df"].loc[st.session_state["lotes_df"]["id_pbo"] == pbo_log, "ubicacion"] = nueva_ubica
+        pbo_log = st.selectbox("Selecciona el PBO a gestionar:", lotes_activos_df["id_pbo"])
+        nueva_ubica = st.selectbox("Reubicar lote físico completo:", UBICACIONES_LOGISTICA)
+        df_rep_pbo = reprocesos_activos_df[reprocesos_activos_df["id_pbo"] == pbo_log] if not reprocesos_activos_df.empty else pd.DataFrame()
+        
+        if df_rep_pbo.empty:
+            st.warning("Este caso aún no cuenta con paletas de reproceso.")
+            tickets_log = []; nuevo_estado_log = "En espera"
+        else:
+            tickets_log = st.multiselect("Tickets nuevos validados en físico:", options=df_rep_pbo["nuevo_ticket_reprocesado"].unique())
+            nuevo_estado_log = st.selectbox("Estatus de Verificación Logística:", ESTATUS_DICTAMEN_LOGISTICA)
+        
+        if st.button("💾 Confirmar Movimiento"):
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE lotes_db SET ubicacion = %s WHERE id_pbo = %s;", (nueva_ubica, pbo_log))
+                st.session_state["lotes_df"].loc[st.session_state["lotes_df"]["id_pbo"] == pbo_log, "ubicacion"] = nueva_ubica
+                
+                if tickets_log:
+                    cursor.execute("UPDATE reproceso_db SET estatus_logistica = %s WHERE nuevo_ticket_reprocesado = ANY(%s);", (nuevo_estado_log, tickets_log))
+                    st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_log), "estatus_logistica"] = nuevo_estado_log
                     
-                    if tickets_log:
-                        cursor.execute("UPDATE reproceso_db SET estatus_logistica = %s WHERE nuevo_ticket_reprocesado = ANY(%s);", (nuevo_estado_log, tickets_log))
-                        st.session_state["reprocesos_df"].loc[st.session_state["reprocesos_df"]["nuevo_ticket_reprocesado"].isin(tickets_log), "estatus_logistica"] = nuevo_estado_log
-                        
-                    conn.commit()
-                    st.success("¡Inventario verificado y reubicado!")
-                    st.rerun()
-                except Exception as e:
-                    pass
-                finally:
-                    cursor.close()
-                    conn.close()
+                conn.commit()
+                st.success("¡Inventario verificado y reubicado!")
+                st.rerun()
+            except Exception as e:
+                pass
+            finally:
+                cursor.close()
+                conn.close()
 
 # ==========================================
-# 7. SECCIÓN DE CONSULTA, REPORTES Y TRAZABILIDAD
+# 7. SECCIÓN DE CONSULTA Y REPORTES
 # ==========================================
 st.divider()
 st.subheader("🔍 Desglose de Piso y Auditoría")
